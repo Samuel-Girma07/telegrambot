@@ -1,53 +1,37 @@
-from supabase import create_client, Client
-from datetime import datetime, timedelta
+"""
+Database operations using Supabase
+Handles all data persistence for the bot
+"""
+
+from supabase import create_client
+from datetime import datetime, timedelta, timezone
 import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
-        self.client: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
-    
-    def init_tables(self):
-        """Initialize database tables - Run this once manually in Supabase SQL Editor"""
-        # SQL Schema (run in Supabase dashboard):
-        """
-        -- Messages table
-        CREATE TABLE messages (
-            id BIGSERIAL PRIMARY KEY,
-            group_id BIGINT NOT NULL,
-            message_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            username TEXT,
-            first_name TEXT,
-            message_text TEXT NOT NULL,
-            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-        CREATE INDEX idx_messages_group_timestamp ON messages(group_id, timestamp DESC);
-        CREATE INDEX idx_messages_user ON messages(user_id, group_id);
-        
-        -- Group settings table
-        CREATE TABLE group_settings (
-            group_id BIGINT PRIMARY KEY,
-            lookback_minutes INT DEFAULT 60,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-        
-        -- Summaries table (for tracking and auto-deletion)
-        CREATE TABLE summaries (
-            id BIGSERIAL PRIMARY KEY,
-            group_id BIGINT NOT NULL,
-            summary_text TEXT NOT NULL,
-            message_count INT NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-        CREATE INDEX idx_summaries_created ON summaries(created_at);
-        """
-        pass
+        """Initialize Supabase client"""
+        # ✅ FIX: Remove Client type hint for compatibility with supabase 2.4.1
+        self.client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+        logger.info("✅ Supabase client initialized successfully")
     
     def store_message(self, group_id, message_id, user_id, username, first_name, message_text, timestamp):
-        """Store a new message in the database"""
+        """
+        Store a message in the database
+        
+        Args:
+            group_id: Telegram group ID
+            message_id: Telegram message ID
+            user_id: Telegram user ID
+            username: User's username
+            first_name: User's first name
+            message_text: Message content
+            timestamp: Message timestamp
+        """
         try:
-            self.client.table("messages").insert({
+            data = {
                 "group_id": group_id,
                 "message_id": message_id,
                 "user_id": user_id,
@@ -55,122 +39,216 @@ class Database:
                 "first_name": first_name,
                 "message_text": message_text,
                 "timestamp": timestamp.isoformat()
-            }).execute()
+            }
+            
+            result = self.client.table("messages").insert(data).execute()
+            logger.debug(f"Message stored: group={group_id}, user=@{username}")
+            return result
+            
         except Exception as e:
-            print(f"Error storing message: {e}")
+            logger.error(f"Error storing message: {e}")
+            return None
     
-    def get_messages(self, group_id, lookback_minutes, max_messages=500):
-        """Fetch messages for summary"""
-        cutoff_time = datetime.utcnow() - timedelta(minutes=lookback_minutes)
+    def get_recent_messages(self, group_id, minutes):
+        """
+        Get recent messages from a group within specified time window
         
+        Args:
+            group_id: Telegram group ID
+            minutes: Number of minutes to look back
+            
+        Returns:
+            List of message dictionaries
+        """
         try:
-            response = self.client.table("messages")\
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            
+            result = self.client.table("messages")\
                 .select("*")\
                 .eq("group_id", group_id)\
                 .gte("timestamp", cutoff_time.isoformat())\
                 .order("timestamp", desc=False)\
-                .limit(max_messages)\
                 .execute()
             
-            return response.data
+            messages = result.data if result.data else []
+            logger.info(f"Retrieved {len(messages)} messages for group {group_id}")
+            return messages
+            
         except Exception as e:
-            print(f"Error fetching messages: {e}")
+            logger.error(f"Error getting recent messages: {e}")
             return []
     
-    def get_user_messages(self, group_id, username, lookback_minutes):
-        """Fetch messages from specific user"""
-        cutoff_time = datetime.utcnow() - timedelta(minutes=lookback_minutes)
+    def get_user_messages(self, group_id, username, minutes):
+        """
+        Get messages from a specific user within time window
         
+        Args:
+            group_id: Telegram group ID
+            username: Target user's username
+            minutes: Number of minutes to look back
+            
+        Returns:
+            List of message dictionaries
+        """
         try:
-            response = self.client.table("messages")\
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            
+            result = self.client.table("messages")\
                 .select("*")\
                 .eq("group_id", group_id)\
-                .eq("username", username.replace("@", ""))\
+                .eq("username", username)\
                 .gte("timestamp", cutoff_time.isoformat())\
                 .order("timestamp", desc=False)\
                 .execute()
             
-            return response.data
+            messages = result.data if result.data else []
+            logger.info(f"Retrieved {len(messages)} messages from @{username}")
+            return messages
+            
         except Exception as e:
-            print(f"Error fetching user messages: {e}")
+            logger.error(f"Error getting user messages: {e}")
             return []
     
-    def get_active_users(self, group_id, lookback_minutes):
-        """Get most active users with message counts"""
-        cutoff_time = datetime.utcnow() - timedelta(minutes=lookback_minutes)
+    def get_user_stats(self, group_id, minutes, limit=10):
+        """
+        Get user activity statistics for a group
         
+        Args:
+            group_id: Telegram group ID
+            minutes: Number of minutes to look back
+            limit: Maximum number of users to return
+            
+        Returns:
+            List of tuples (username, first_name, message_count)
+        """
         try:
-            response = self.client.table("messages")\
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            
+            result = self.client.table("messages")\
                 .select("username, first_name")\
                 .eq("group_id", group_id)\
                 .gte("timestamp", cutoff_time.isoformat())\
                 .execute()
             
+            if not result.data:
+                return []
+            
             # Count messages per user
             user_counts = {}
-            for msg in response.data:
-                username = msg.get("username") or msg.get("first_name", "Unknown")
-                user_counts[username] = user_counts.get(username, 0) + 1
+            for msg in result.data:
+                username = msg.get("username", "unknown")
+                first_name = msg.get("first_name", "Unknown")
+                key = (username, first_name)
+                user_counts[key] = user_counts.get(key, 0) + 1
             
-            # Sort by message count
-            return sorted(user_counts.items(), key=lambda x: x[1], reverse=True)
+            # Sort by message count (descending) and limit
+            sorted_stats = sorted(
+                user_counts.items(), 
+                key=lambda x: x[1], 
+                reverse=True
+            )[:limit]
+            
+            # Format as list of tuples
+            stats = [(username, first_name, count) 
+                    for (username, first_name), count in sorted_stats]
+            
+            logger.info(f"User stats calculated for group {group_id}: {len(stats)} users")
+            return stats
+            
         except Exception as e:
-            print(f"Error getting active users: {e}")
+            logger.error(f"Error getting user stats: {e}")
             return []
     
-    def set_group_lookback(self, group_id, lookback_minutes):
-        """Update group's lookback window setting"""
+    def get_group_setting(self, group_id):
+        """
+        Get the lookback time setting for a group
+        
+        Args:
+            group_id: Telegram group ID
+            
+        Returns:
+            Lookback time in minutes (default: from config)
+        """
         try:
-            self.client.table("group_settings")\
-                .upsert({"group_id": group_id, "lookback_minutes": lookback_minutes})\
-                .execute()
-        except Exception as e:
-            print(f"Error updating settings: {e}")
-    
-    def get_group_lookback(self, group_id):
-        """Get group's lookback window"""
-        try:
-            response = self.client.table("group_settings")\
+            result = self.client.table("group_settings")\
                 .select("lookback_minutes")\
                 .eq("group_id", group_id)\
                 .execute()
             
-            if response.data:
-                return response.data[0]["lookback_minutes"]
-            return config.DEFAULT_LOOKBACK_MINUTES
+            if result.data and len(result.data) > 0:
+                minutes = result.data[0]["lookback_minutes"]
+                logger.debug(f"Group {group_id} setting: {minutes} minutes")
+                return minutes
+            else:
+                # Return default if not set
+                logger.debug(f"Group {group_id} using default setting")
+                return config.DEFAULT_LOOKBACK_MINUTES
+                
         except Exception as e:
-            print(f"Error fetching settings: {e}")
+            logger.error(f"Error getting group setting: {e}")
             return config.DEFAULT_LOOKBACK_MINUTES
     
-    def store_summary(self, group_id, summary_text, message_count):
-        """Store summary for tracking"""
-        try:
-            self.client.table("summaries").insert({
-                "group_id": group_id,
-                "summary_text": summary_text,
-                "message_count": message_count
-            }).execute()
-        except Exception as e:
-            print(f"Error storing summary: {e}")
-    
-    def cleanup_old_data(self):
-        """Delete messages older than 7 days and summaries older than 14 days"""
-        msg_cutoff = datetime.utcnow() - timedelta(days=config.MESSAGE_RETENTION_DAYS)
-        summary_cutoff = datetime.utcnow() - timedelta(days=config.SUMMARY_DELETION_DAYS)
+    def update_group_setting(self, group_id, lookback_minutes):
+        """
+        Update the lookback time setting for a group
         
+        Args:
+            group_id: Telegram group ID
+            lookback_minutes: New lookback time in minutes
+        """
         try:
-            # Delete old messages
-            self.client.table("messages")\
-                .delete()\
-                .lt("timestamp", msg_cutoff.isoformat())\
+            # Check if setting exists
+            existing = self.client.table("group_settings")\
+                .select("*")\
+                .eq("group_id", group_id)\
                 .execute()
             
-            # Delete old summaries
-            self.client.table("summaries")\
-                .delete()\
-                .lt("created_at", summary_cutoff.isoformat())\
-                .execute()
+            data = {
+                "group_id": group_id,
+                "lookback_minutes": lookback_minutes,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
             
-            print(f"Cleanup completed at {datetime.utcnow()}")
+            if existing.data and len(existing.data) > 0:
+                # Update existing setting
+                result = self.client.table("group_settings")\
+                    .update(data)\
+                    .eq("group_id", group_id)\
+                    .execute()
+                logger.info(f"Updated setting for group {group_id}: {lookback_minutes} min")
+            else:
+                # Insert new setting
+                data["created_at"] = datetime.now(timezone.utc).isoformat()
+                result = self.client.table("group_settings")\
+                    .insert(data)\
+                    .execute()
+                logger.info(f"Created setting for group {group_id}: {lookback_minutes} min")
+            
+            return result
+            
         except Exception as e:
-            print(f"Error during cleanup: {e}")
+            logger.error(f"Error updating group setting: {e}")
+            return None
+    
+    def cleanup_old_data(self, days=7):
+        """
+        Delete messages older than specified days
+        Runs as a scheduled job to keep database clean
+        
+        Args:
+            days: Delete messages older than this many days
+        """
+        try:
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+            
+            result = self.client.table("messages")\
+                .delete()\
+                .lt("timestamp", cutoff_date.isoformat())\
+                .execute()
+            
+            logger.info(f"Cleanup completed: Deleted messages older than {days} days")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            return None
