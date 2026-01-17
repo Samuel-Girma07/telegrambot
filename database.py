@@ -13,23 +13,16 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self):
         """Initialize Supabase client"""
-        # ✅ FIX: Remove Client type hint for compatibility with supabase 2.4.1
-        self.client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
-        logger.info("✅ Supabase client initialized successfully")
-    
+        # NO type hint for client to avoid version issues
+        try:
+            self.client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+            logger.info("✅ Supabase client initialized successfully")
+        except Exception as e:
+            logger.critical(f"Failed to initialize Supabase client: {e}")
+            raise
+
     def store_message(self, group_id, message_id, user_id, username, first_name, message_text, timestamp):
-        """
-        Store a message in the database
-        
-        Args:
-            group_id: Telegram group ID
-            message_id: Telegram message ID
-            user_id: Telegram user ID
-            username: User's username
-            first_name: User's first name
-            message_text: Message content
-            timestamp: Message timestamp
-        """
+        """Store a message in the database"""
         try:
             data = {
                 "group_id": group_id,
@@ -50,16 +43,7 @@ class Database:
             return None
     
     def get_recent_messages(self, group_id, minutes):
-        """
-        Get recent messages from a group within specified time window
-        
-        Args:
-            group_id: Telegram group ID
-            minutes: Number of minutes to look back
-            
-        Returns:
-            List of message dictionaries
-        """
+        """Get recent messages from a group within specified time window"""
         try:
             cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
             
@@ -79,17 +63,7 @@ class Database:
             return []
     
     def get_user_messages(self, group_id, username, minutes):
-        """
-        Get messages from a specific user within time window
-        
-        Args:
-            group_id: Telegram group ID
-            username: Target user's username
-            minutes: Number of minutes to look back
-            
-        Returns:
-            List of message dictionaries
-        """
+        """Get messages from a specific user within time window"""
         try:
             cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
             
@@ -110,17 +84,7 @@ class Database:
             return []
     
     def get_user_stats(self, group_id, minutes, limit=10):
-        """
-        Get user activity statistics for a group
-        
-        Args:
-            group_id: Telegram group ID
-            minutes: Number of minutes to look back
-            limit: Maximum number of users to return
-            
-        Returns:
-            List of tuples (username, first_name, message_count)
-        """
+        """Get user activity statistics for a group"""
         try:
             cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
             
@@ -160,15 +124,7 @@ class Database:
             return []
     
     def get_group_setting(self, group_id):
-        """
-        Get the lookback time setting for a group
-        
-        Args:
-            group_id: Telegram group ID
-            
-        Returns:
-            Lookback time in minutes (default: from config)
-        """
+        """Get the lookback time setting for a group"""
         try:
             result = self.client.table("group_settings")\
                 .select("lookback_minutes")\
@@ -189,13 +145,7 @@ class Database:
             return config.DEFAULT_LOOKBACK_MINUTES
     
     def update_group_setting(self, group_id, lookback_minutes):
-        """
-        Update the lookback time setting for a group
-        
-        Args:
-            group_id: Telegram group ID
-            lookback_minutes: New lookback time in minutes
-        """
+        """Update the lookback time setting for a group"""
         try:
             # Check if setting exists
             existing = self.client.table("group_settings")\
@@ -231,13 +181,7 @@ class Database:
             return None
     
     def cleanup_old_data(self, days=7):
-        """
-        Delete messages older than specified days
-        Runs as a scheduled job to keep database clean
-        
-        Args:
-            days: Delete messages older than this many days
-        """
+        """Delete messages older than specified days"""
         try:
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
             
