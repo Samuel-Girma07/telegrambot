@@ -18,7 +18,7 @@ from telegram.ext import (
     filters, 
     ContextTypes
 )
-from datetime import datetime, timedelta, timezone, time  # ✅ FIX: Import time from datetime
+from datetime import datetime, timedelta, timezone, time
 import logging
 import threading
 import os
@@ -45,8 +45,12 @@ def run_health_server():
     Run Flask server on port specified by Render
     Render sets PORT env var to 10000
     """
-    port = int(os.environ.get('PORT', 8080))  # ✅ FIX: Use PORT from env
-    health_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    try:
+        port = int(os.environ.get('PORT', 8080))
+        # Use 0.0.0.0 to bind to all interfaces (required for Render)
+        health_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+    except Exception as e:
+        logger.error(f"Failed to start health server: {e}")
 
 # ============================================
 # LOGGING SETUP
@@ -58,7 +62,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================
-# GLOBAL VARIABLES (initialized in main())
+# GLOBAL VARIABLES
 # ============================================
 db = None
 summarizer = None
@@ -89,7 +93,11 @@ Add me to your groups and let's get started! 🚀
         logger.info(f"Start command executed by user {update.message.from_user.id}")
     except Exception as e:
         logger.error(f"Error in start command: {e}")
-        await update.message.reply_text("An error occurred. Please try again.")
+        # Only try to reply if we can
+        try:
+            await update.message.reply_text("An error occurred. Please try again.")
+        except:
+            pass
 
 async def catchup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /catchup command - Generate conversation summary"""
@@ -112,6 +120,8 @@ async def catchup(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📭 No messages found in the last {lookback_minutes} minutes."
             )
             return
+        
+        await update.message.reply_text("⏳ Generating summary...")
         
         # Generate AI summary
         summary_text = summarizer.summarize(messages)
@@ -361,7 +371,6 @@ def main():
         app.add_error_handler(error_handler)
         
         # Schedule daily cleanup job at 3 AM UTC
-        # ✅ FIX: Use time() from datetime module, not datetime.time()
         app.job_queue.run_daily(
             daily_cleanup, 
             time=time(hour=3, minute=0, tzinfo=timezone.utc)
@@ -379,6 +388,9 @@ def main():
     
     except Exception as e:
         logger.error(f"❌ Fatal error starting bot: {e}")
+        # In case of fatal error, keep main thread alive for a bit so logs can flush
+        import time as t
+        t.sleep(5)
         raise
 
 if __name__ == "__main__":
