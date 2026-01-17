@@ -1,11 +1,24 @@
 """
 Telegram Conversation Summarizer Bot
-With health check endpoint for Render
+With health check endpoint for Render deployment
+
+Features:
+- Summarize group conversations using AI
+- Track user activity and message statistics
+- Configurable time windows for summaries
+- Health check endpoint for Render.com
 """
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from datetime import datetime, timedelta, timezone
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    MessageHandler, 
+    CallbackQueryHandler, 
+    filters, 
+    ContextTypes
+)
+from datetime import datetime, timedelta, timezone, time  # ✅ FIX: Import time from datetime
 import logging
 import threading
 import os
@@ -19,19 +32,24 @@ health_app = Flask(__name__)
 
 @health_app.route('/')
 def home():
-    return "Telegram Bot is running!", 200
+    """Root endpoint - confirms bot is running"""
+    return "Telegram Bot is running! ✅", 200
 
 @health_app.route('/health')
 def health():
+    """Health check endpoint for Render"""
     return "OK", 200
 
 def run_health_server():
-    """Run Flask server on port 8080"""
-    port = int(os.environ.get('PORT', 8080))
+    """
+    Run Flask server on port specified by Render
+    Render sets PORT env var to 10000
+    """
+    port = int(os.environ.get('PORT', 8080))  # ✅ FIX: Use PORT from env
     health_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # ============================================
-# Setup logging
+# LOGGING SETUP
 # ============================================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -50,7 +68,7 @@ summarizer = None
 # ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
+    """Handle /start command - Show welcome message"""
     welcome_message = """
 👋 **Welcome to Conversation Summarizer Bot!**
 
@@ -74,10 +92,11 @@ Add me to your groups and let's get started! 🚀
         await update.message.reply_text("An error occurred. Please try again.")
 
 async def catchup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /catchup command"""
+    """Handle /catchup command - Generate conversation summary"""
     global db, summarizer
     
     try:
+        # Only works in groups
         if update.message.chat.type not in ["group", "supergroup"]:
             await update.message.reply_text("⚠️ This command only works in groups!")
             return
@@ -85,6 +104,7 @@ async def catchup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_id = update.message.chat_id
         lookback_minutes = db.get_group_setting(group_id)
         
+        # Fetch recent messages
         messages = db.get_recent_messages(group_id, lookback_minutes)
         
         if not messages:
@@ -93,6 +113,7 @@ async def catchup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Generate AI summary
         summary_text = summarizer.summarize(messages)
         
         await update.message.reply_text(
@@ -100,21 +121,23 @@ async def catchup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         
-        logger.info(f"Catchup generated for group {group_id}")
+        logger.info(f"Catchup generated for group {group_id} ({len(messages)} messages)")
         
     except Exception as e:
         logger.error(f"Error in catchup: {e}")
         await update.message.reply_text("❌ An error occurred generating the summary.")
 
 async def setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /setting command (admin only)"""
+    """Handle /setting command - Configure time window (admin only)"""
     global db
     
     try:
+        # Only works in groups
         if update.message.chat.type not in ["group", "supergroup"]:
             await update.message.reply_text("⚠️ This command only works in groups!")
             return
         
+        # Check if user is admin
         user = update.message.from_user
         chat = update.message.chat
         member = await context.bot.get_chat_member(chat.id, user.id)
@@ -123,9 +146,10 @@ async def setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Only admins can change settings!")
             return
         
-        # Import config here to access TIME_WINDOWS
+        # Import config to access TIME_WINDOWS
         import config
         
+        # Build inline keyboard with time options
         keyboard = []
         for label, minutes in config.TIME_WINDOWS.items():
             keyboard.append([InlineKeyboardButton(label, callback_data=f"set_{minutes}")])
@@ -152,9 +176,11 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     try:
+        # Extract minutes from callback data
         minutes = int(query.data.replace("set_", ""))
         group_id = query.message.chat_id
         
+        # Update database
         db.update_group_setting(group_id, minutes)
         
         await query.edit_message_text(
@@ -169,10 +195,11 @@ async def setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ An error occurred updating the setting.")
 
 async def who(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /who command"""
+    """Handle /who command - Show most active users"""
     global db
     
     try:
+        # Only works in groups
         if update.message.chat.type not in ["group", "supergroup"]:
             await update.message.reply_text("⚠️ This command only works in groups!")
             return
@@ -180,6 +207,7 @@ async def who(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_id = update.message.chat_id
         lookback_minutes = db.get_group_setting(group_id)
         
+        # Get user statistics
         stats = db.get_user_stats(group_id, lookback_minutes)
         
         if not stats:
@@ -188,6 +216,7 @@ async def who(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Format response
         response = f"👥 **Most active users (last {lookback_minutes} min):**\n\n"
         
         for rank, (username, first_name, count) in enumerate(stats, 1):
@@ -201,14 +230,16 @@ async def who(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ An error occurred.")
 
 async def person(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /person command"""
+    """Handle /person command - Get summary for specific user"""
     global db, summarizer
     
     try:
+        # Only works in groups
         if update.message.chat.type not in ["group", "supergroup"]:
             await update.message.reply_text("⚠️ This command only works in groups!")
             return
         
+        # Check if username provided
         if not context.args:
             await update.message.reply_text("⚠️ Usage: `/person @username`", parse_mode="Markdown")
             return
@@ -217,6 +248,7 @@ async def person(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_id = update.message.chat_id
         lookback_minutes = db.get_group_setting(group_id)
         
+        # Get messages from specific user
         messages = db.get_user_messages(group_id, target_username, lookback_minutes)
         
         if not messages:
@@ -225,6 +257,7 @@ async def person(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Generate summary
         summary_text = summarizer.summarize(messages)
         
         await update.message.reply_text(
@@ -237,16 +270,18 @@ async def person(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ An error occurred.")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Store all group messages"""
+    """Store all group messages in database"""
     global db
     
     try:
         if update.message and update.message.chat.type in ["group", "supergroup"]:
             message = update.message
             
+            # Only store text messages
             if not message.text:
                 return
             
+            # Store in database
             db.store_message(
                 group_id=message.chat_id,
                 message_id=message.message_id,
@@ -257,13 +292,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 timestamp=message.date
             )
             
-            logger.info(f"Stored message from group {message.chat_id}")
+            logger.debug(f"Stored message from group {message.chat_id}")
     
     except Exception as e:
         logger.error(f"Error storing message: {e}")
 
 async def daily_cleanup(context: ContextTypes.DEFAULT_TYPE):
-    """Run daily cleanup of old data"""
+    """Run daily cleanup of old data (scheduled job)"""
     global db
     
     try:
@@ -274,7 +309,7 @@ async def daily_cleanup(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error during daily cleanup: {e}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors"""
+    """Global error handler"""
     logger.error(f"Update {update} caused error {context.error}")
 
 # ============================================
@@ -282,17 +317,20 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 
 def main():
-    """Start the bot and health server"""
+    """
+    Main application entry point
+    Starts health server, initializes database, and runs bot
+    """
     global db, summarizer
     
     try:
-        # START HEALTH SERVER FIRST
-        logger.info("Starting health check server on port 8080...")
+        # STEP 1: START HEALTH SERVER FIRST (critical for Render)
+        logger.info("Starting health check server...")
         health_thread = threading.Thread(target=run_health_server, daemon=True)
         health_thread.start()
-        logger.info("✅ Health server started")
+        logger.info("✅ Health server started successfully")
         
-        # NOW INITIALIZE DATABASE AND SUMMARIZER
+        # STEP 2: INITIALIZE DATABASE AND SUMMARIZER
         logger.info("Initializing database and summarizer...")
         import config
         from database import Database
@@ -300,41 +338,47 @@ def main():
         
         db = Database()
         summarizer = Summarizer()
-        logger.info("✅ Database and summarizer initialized")
+        logger.info("✅ Database and summarizer initialized successfully")
         
-        # Create Telegram bot application
+        # STEP 3: CREATE TELEGRAM BOT APPLICATION
+        logger.info("Creating Telegram bot application...")
         app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
         
-        # Add command handlers
+        # Register command handlers
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("catchup", catchup))
         app.add_handler(CommandHandler("setting", setting))
         app.add_handler(CommandHandler("who", who))
         app.add_handler(CommandHandler("person", person))
         
-        # Add callback handler for settings menu
+        # Register callback handler for settings menu
         app.add_handler(CallbackQueryHandler(setting_callback, pattern="^set_"))
         
-        # Add message handler (store all group messages)
+        # Register message handler (store all text messages)
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         
-        # Add error handler
+        # Register error handler
         app.add_error_handler(error_handler)
         
-        # Add daily cleanup job (runs at 3 AM UTC)
+        # Schedule daily cleanup job at 3 AM UTC
+        # ✅ FIX: Use time() from datetime module, not datetime.time()
         app.job_queue.run_daily(
             daily_cleanup, 
-            time=datetime.time(hour=3, minute=0, tzinfo=timezone.utc)
+            time=time(hour=3, minute=0, tzinfo=timezone.utc)
         )
         
-        logger.info("🤖 Telegram bot started successfully! Running in polling mode...")
-        print("✅ Bot is running... Press Ctrl+C to stop.")
+        logger.info("🤖 Telegram bot started successfully!")
+        logger.info("Running in polling mode...")
+        print("\n" + "="*60)
+        print("✅ Bot is running successfully!")
+        print("="*60)
+        print("Press Ctrl+C to stop.\n")
         
-        # Start polling
+        # Start polling (long polling mode for updates)
         app.run_polling(allowed_updates=Update.ALL_TYPES)
     
     except Exception as e:
-        logger.error(f"Fatal error starting bot: {e}")
+        logger.error(f"❌ Fatal error starting bot: {e}")
         raise
 
 if __name__ == "__main__":
